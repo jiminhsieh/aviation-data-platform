@@ -1,0 +1,4 @@
+[submodule "tf-skills"]
+	path = .tf-skills
+	url = https://github.com/antonbabenko/terraform-skill
+    tag = v1.17.2
