@@ -25,8 +25,9 @@ To balance these trade-offs, I propose a polyrepo structure connected through Gi
    1. If we need to set up data lake in isolated network, we will need some resources like private endpoints and private DNS
 
 ### Data Lake
-1. Use minutely partitioning as the requirement is user expect data latency less than a few minutes.
-2. Data Access Permission Table
+1. time and icao24 from JSON response should be a unique key.
+2. Use minutely partitioning as the requirement is user expect data latency less than a few minutes.
+3. Data Access Permission Table
 
 | Components | ATM | Data Scientist | Platform Engineer |
 |---|---|---|---|
