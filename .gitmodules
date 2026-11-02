@@ -6,3 +6,7 @@
 	path = ingestion
 	url = https://github.com/jiminhsieh/aviation-data-scrapper.git
 	branch = main
+[submodule "transformation"]
+	path = transformation
+	url = https://github.com/jiminhsieh/aviation-data-pipeline.git
+	branch = main
