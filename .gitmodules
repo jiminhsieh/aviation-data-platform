@@ -2,3 +2,7 @@
 	path = .tf-skills
 	url = https://github.com/antonbabenko/terraform-skill
     tag = v1.17.2
+[submodule "ingestion"]
+	path = ingestion
+	url = https://github.com/jiminhsieh/aviation-data-scrapper.git
+	branch = main
