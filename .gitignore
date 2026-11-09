@@ -43,5 +43,8 @@ terraform.rc
 # Uncomment the line below if you want to ignore planout files.
 # planout
 
+# Mac
+.DS_Store
+
 .idea
 tech-challenge-sr-data-infra-platform-engineer.md
