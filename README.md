@@ -1,6 +1,22 @@
 # Aviation Data Platform
 
+An Azure lakehouse for OpenSky aircraft observations over Southeast Asia.
+
+**Status: Adopted design / implementation pending.** This README summarizes the target architecture, not a deployed platform. The [architecture and technical design](references/thales-azure-data-platform-design.md) is authoritative; pipeline code and runnable setup commands remain to be implemented.
+
 ## Architecture Diagram
+
+```mermaid
+flowchart TB
+    OS["OpenSky API"] --> CJ["AKS CronJob: every 120 seconds"]
+    CJ --> BR["Bronze: immutable hourly UTC Avro paths"]
+    BR --> ST["Databricks Spark Structured Streaming"]
+    CP["Durable checkpoint"] <--> ST
+    ST --> SI["Silver Delta: hourly UTC partitions"]
+    SI --> SQ["Scheduled Databricks SQL: every 2 minutes"]
+    SQ --> GO["Gold Delta: hourly UTC partitions, five-minute aggregates"]
+    GO --> AN["Read-only analyst SQL / dashboards"]
+```
 
 ## Architecture Decision
 
@@ -10,31 +26,54 @@ The requirements initially suggest a monorepo. However, a monorepo may complicat
 To balance these trade-offs, I propose a polyrepo structure connected through Git submodules. Each team can independently manage its repository, permissions, and CI/CD pipelines, while a top-level repository provides a unified view of the overall system.
 
 * Infrastructure code - [infra/tf](infra/tf)
-* Ingestion code - [ingestion](https://github.com/jiminhsieh/aviation-data-scraper)
+* Ingestion code - [ingestion](https://github.com/jiminhsieh/aviation-data-scrapper)
 * Transformation code - [transformation](https://github.com/jiminhsieh/aviation-data-pipeline)
 
 ### Data Platform
 
-1. The response from opensky-network will be converted from JSON to Avro format and publish to Kafka.
-   1. Avro is a better format in raw zone because of its fast row-based read performance, low storage overhead, and robust support for schema evolution.
-2. We have 2 containers. One is for raw zone and another is for cleansed zone.
-3. Use Databricks for pipeline transformation as it takes care of data governance, data lineage, and auditing at least.
-4. Use Spark streaming to read Kafka Avro record then sa
-5. Use AKS for data ingestion job. I chose AKS because we could also consider to run some Spark jobs on k8s for cost reduction.
-6. Don't need to use any private endpoint as I assume we don't need to build an intranet. 
-   1. If we need to set up data lake in isolated network, we will need some resources like private endpoints and private DNS
+1. **Ingestion:** an AKS CronJob authenticates to OpenSky every 120 seconds for the fixed bounding box. It archives one immutable Snappy-compressed Avro container per response, preserving exactly the original `time` and positional `states` payload without added Bronze fields.
+2. **Bronze → Silver:** native Spark Structured Streaming on Databricks classic Jobs compute uses a durable checkpoint and initially one-minute micro-batches. Each batch rereads complete affected Bronze hours, validates and deterministically deduplicates observations, then atomically replaces those Silver partitions with `replaceWhere`.
+3. **Silver → Gold:** an independent SQL-file task runs every two minutes on a Pro or Serverless SQL warehouse. At PoC scale, it atomically overwrites all Gold data from retained Silver, including clearing obsolete hours. It is not coupled to the stream checkpoint; SQL failures do not block Silver.
+4. **Governance and delivery:** Unity Catalog governs volumes, managed Delta tables, grants and lineage. Terraform provisions the platform; Helm deploys the collector.
+
+AKS provides controlled Kubernetes ingestion; Spark runs in Databricks, not on AKS. No Kafka, Airflow or Auto Loader is required. Avro small-file overhead and continuous Spark/SQL warehouse costs must be measured, not assumed to be lower.
 
 ### Data Lake
-1. time and icao24 from JSON response should be a unique key.
-2. Use minutely partitioning as the requirement is user expect data latency less than a few minutes.
-3. Data Access Permission Table
 
-| Components | ATM | Data Scientist | Platform Engineer |
+ADLS Gen2 uses four containers: `bronze`, `checkpoints`, `lakehouse` and `quarantine`. Bronze and checkpoints have separately governed Unity Catalog volumes; Silver and Gold are managed Delta tables.
+
+| Layer | Hourly UTC layout |
+|---|---|
+| Bronze | `opensky/states/year=YYYY/month=MM/day=DD/hour=HH/<response.time>.avro` |
+| Silver | Partitioned by `snapshot_hour_utc` |
+| Gold | Partitioned by `bucket_hour_utc` |
+
+All hour keys use source time and include the full UTC date. Hourly partitioning is a physical layout, not a one-hour processing delay. The freshness objective is **p95 <5 minutes** from source snapshot to queryable Gold, subject to measurement.
+
+- **Silver key:** `(snapshot_time, icao24)`, where `snapshot_time` comes from source `time`.
+- **Gold analytics:** five-minute UTC country buckets with aircraft counts and mean barometric altitude using each aircraft's latest non-null altitude within that bucket. `origin_country` is a registration-country proxy, not geographic overflight country.
+- **History:** at least the trailing 24 hours after warm-up; initially retain approximately 30 days. A rolling 24-hour query can span 25 hourly partitions.
+
+#### Data Access Permissions
+
+| Component | ATM | Data Scientist | Platform Engineer |
 |---|---|---|---|
-| Raw Zone| None | None | READ only or RW | 
-| Silver Zone | Read Only | Read only | RW |
-| Gold Zone | Read Only | RW | RW |
-| Key Vault | None | Key Vault Reader | Key Vault Administrator |
+| Bronze | None | None | Controlled recovery |
+| Checkpoints | None | None | Controlled recovery |
+| Silver | Optional read | Read only | Operational management |
+| Gold | Read/dashboard | Read only | Operational management |
+| Key Vault | None | None | Controlled management |
 
-## Runbook  
+### Security and Networking
+
+Use separate least-privilege collector, Silver stream and Gold SQL identities, AKS Workload Identity, Key Vault and a Databricks Access Connector. Analysts need no storage keys or secrets; no static Azure storage credentials are used in the target design.
+
+For the PoC, justify any public endpoints and verify AKS/Databricks connectivity without anonymous storage access. Production hardening includes private storage/Key Vault endpoints and DNS. Validate the supported Databricks serverless SQL networking configuration separately before restricting public storage access; an all-private deployment is not yet implemented.
+
+## Runbook
+
+Planned procedures, not runnable deployment instructions:
+
+- [First-run checklist](references/thales-azure-data-platform-design.md#first-run-checklist)
+- [Replay and recovery](references/thales-azure-data-platform-design.md#93-replay-runbook)
 
