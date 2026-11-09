@@ -27,7 +27,8 @@ Bronze uses source-time hourly UTC paths. Bootstrap Silver partitioned by `snaps
 
 ## State and Access
 
-- Use a restricted remote backend with locking for shared deployments and separate state per environment. Never commit Terraform state or secret-bearing variable files.
+- This PoC uses Terraform's local backend to keep setup simple, with separate state per environment. Never commit Terraform state or secret-bearing variable files; protect and back up local state.
+- For shared or production deployments, use an ADLS Gen2 storage account with Terraform's AzureRM remote backend, restricted access and state locking.
 - Register the external OpenSky API client and inject its credentials into Key Vault outside Terraform state. These are documented manual inputs, not Terraform-managed secret values.
 - Use separate collector, Silver stream and Gold SQL identities. The collector uses AKS Workload Identity and Key Vault CSI; Databricks storage access uses the Access Connector and UC grants, not user storage keys.
 - Analysts have no Bronze, checkpoint or Key Vault access. Data scientists read Silver/Gold; ATM users read Gold and optionally Silver. See the [full access matrix](../../references/thales-azure-data-platform-design.md#102-access-matrix).
@@ -43,7 +44,7 @@ Private endpoints and associated private DNS are deferred for the PoC. Productio
 No executable setup commands are supplied until the Terraform configuration and deployment artifacts exist. The intended order is:
 
 1. Select `sit`, `uat` or `prod`; confirm Azure/Databricks bootstrap permissions, metastore availability, and required SKU availability/quotas in `southeastasia`.
-2. Prepare the environment's remote backend and provision Azure foundation, storage, AKS/ACR, identities, Key Vault and Databricks resources.
+2. Prepare the environment's separate local Terraform state and provision Azure foundation, storage, AKS/ACR, identities, Key Vault and Databricks resources.
 3. Configure UC volumes, managed tables, grants, compute and jobs. Bootstrap the Bronze source directory before starting the explicit-schema stream.
 4. Securely inject OpenSky credentials, build/push the collector image and deploy its ServiceAccount/CSI/CronJob through Helm.
 5. Start the checkpointed Silver stream, then enable the independent Gold SQL task with its UTC schedule. Enforce one active writer per target.
