@@ -2,35 +2,77 @@
 
 ## Purpose
 
-Retain an auditable copy of incoming OpenSky Avro events while producing validated aircraft observations that remain stable across retries and replay.
+Turn immutable source-shaped Bronze Avro snapshots into typed, validated Silver observations through deterministic complete-hour replacement and recoverable file progress independently of Gold.
 
 ## ADDED Requirements
 
-### Requirement: Durable raw archive
-The Kafka-to-lake pipeline SHALL retain every consumed event's original Avro value and Kafka coordinates in a durable raw layer and SHALL avoid duplicating the same topic/partition/offset on replay.
+### Requirement: Checkpointed canonical file processing
+The pipeline SHALL discover canonical Avro files recursively under a stable Bronze source root using an explicit compatible schema and a dedicated durable checkpoint outside source/table storage. It SHALL decode the actual positional Avro-union representation, preserve file provenance and fail visibly on malformed or incompatible canonical files rather than silently skipping them. Ingestion, not this pipeline, owns the durable Bronze archive.
 
-#### Scenario: Retry after an incomplete microbatch
-- **WHEN** an input batch is retried after raw was written but before later stages completed
-- **THEN** the raw layer still contains one record per Kafka coordinate with the same Avro bytes and processing resumes without data loss
+#### Scenario: New source-hour directory
+- **WHEN** a valid file arrives in a newly created UTC-hour directory under the watched root
+- **THEN** it is eligible for discovery without changing the source root or checkpoint and source `time` determines its processing hour
 
-### Requirement: Typed validated silver observations
-The pipeline SHALL decode the versioned Avro contract into typed records with one observation per response time and non-empty `icao24`, preserving nullable fields, trimming callsign, checking obvious coordinate/range errors, and recording rejected-row counts while leaving their source events in raw.
+#### Scenario: Incompatible canonical input
+- **WHEN** a discovered file has malformed Avro, unexpected length/type or an invalid source timestamp
+- **THEN** processing fails visibly without successful checkpoint acknowledgement or silent data exclusion and preserves the original Bronze evidence
+
+### Requirement: Typed validated Silver observations
+Silver SHALL retain one observation per `(snapshot_time, icao24)`, where `snapshot_time` is the top-level source `time`, with named typed source fields, explicit measurement units, Bronze-file provenance and nullable optional values. Callsigns SHALL be trimmed only in Silver; null/blank countries SHALL remain unchanged until Gold. Invalid aircraft identifiers (not six hexadecimal characters) or out-of-range coordinates SHALL be rejected and counted with file/row provenance in restricted diagnostics; failure to record required accounting SHALL fail the batch.
+
+#### Scenario: Missing optional measurements
+- **WHEN** a state has a valid aircraft identifier and null coordinates, altitude or callsign
+- **THEN** Silver preserves the observation and genuine nulls without invented measurements or a premature `Unknown` country label
+
+#### Scenario: Invalid identifier or coordinates
+- **WHEN** an observation has an invalid identifier or longitude/latitude outside their valid ranges
+- **THEN** it is excluded from Silver, rejection count/reason/provenance are recorded, and its original remains in immutable Bronze
 
 #### Scenario: Duplicate aircraft snapshot
-- **WHEN** the same aircraft and response time appear again in a replay or later poll
-- **THEN** silver contains one deterministic observation for that key
+- **WHEN** multiple observations have the same `(snapshot_time, icao24)` within a complete rebuilt hour
+- **THEN** one deterministic survivor is selected by greatest `last_contact`, then `time_position`, then stable normalized observation-content hash, with null ordering defined consistently
 
-#### Scenario: Missing position and malformed row
-- **WHEN** a state has null coordinates but a valid aircraft ID
-- **THEN** silver retains it with null coordinates; when coordinates are out of range or the aircraft ID is empty, the row is excluded from silver and counted as rejected while raw remains available
+### Requirement: Source-time hourly partition contract
+Silver SHALL use `snapshot_time` as Unix-seconds BIGINT and UTC TIMESTAMP values for `snapshot_at_utc`, `snapshot_hour_utc` and five-minute `bucket_start_utc`. Hour and bucket values SHALL derive from `floor(snapshot_time / 3600) * 3600` and `floor(snapshot_time / 300) * 300` respectively before timestamp conversion. The table SHALL be physically partitioned by the full-date `snapshot_hour_utc`.
 
-#### Scenario: Unsupported schema version
-- **WHEN** an event has an incompatible or unknown schema version
-- **THEN** the pipeline reports the failure, retains the last successfully committed position for replay, and does not silently corrupt silver
+#### Scenario: Source crosses a UTC day boundary
+- **WHEN** observations cross a UTC hour/day/month boundary or are uploaded late
+- **THEN** each timestamp, hour partition and five-minute bucket follows source time, independently of upload time or session-local timezone
 
-### Requirement: Recoverable ordered processing
-The pipeline SHALL persist checkpoints and commit raw before silver and silver before downstream gold, so that a failed batch can be replayed safely without advancing its source position before all required outputs succeed.
+### Requirement: Atomic complete-hour replacement
+Each processing batch SHALL identify affected UTC hours before expanding aircraft arrays, reread all canonical Bronze files for those hours, validate source/path agreement, normalize/validate/deduplicate the complete inputs and atomically replace only the affected Silver hours in one commit. The replacement SHALL preserve the table/schema/grants, enforce the explicit hour scope and keep unrelated hours unchanged. It SHALL never use only the newly discovered snapshots as a complete-hour replacement.
+
+#### Scenario: Second snapshot in an existing hour
+- **WHEN** a new snapshot arrives in an hour already represented in Silver
+- **THEN** the full Bronze hour is reread and the replacement preserves earlier snapshots while adding the new business observations without duplicate keys
+
+#### Scenario: Batch spans multiple hours
+- **WHEN** newly discovered files include current and late historical hours
+- **THEN** all complete affected hours are replaced atomically and unrelated partitions remain unchanged
+
+#### Scenario: Empty input or zero-observation hour
+- **WHEN** a batch has no affected hours
+- **THEN** it makes no Silver write; an affected hour whose complete validated rebuild has zero surviving observations instead receives an explicit schema-correct empty replacement that clears only that hour
+
+#### Scenario: Incomplete or unreadable source hour
+- **WHEN** an affected hour is expired, partly deleted, incompletely restored, unreadable or inconsistent with its source-time path
+- **THEN** processing stops before replacement and requires complete source restoration rather than interpreting missing data as zero aircraft
+
+### Requirement: Recoverable independent Silver progress
+The pipeline SHALL retain complete canonical Bronze for the retained Silver/rebuild horizon, serialize stream/backfill writers and acknowledge source progress only after successful Silver processing and required accounting, independently of Gold. Ordinary restarts SHALL preserve the checkpoint. Controlled bounded replay SHALL pause the normal writer, expand selected paths to complete hours, verify completeness, reuse the same transformation/replacement, validate results, refresh Gold independently and resume the original stream. Lost/incompatible checkpoints and file-age/discovery bounds SHALL require explicit recovery rather than automatic reset.
+
+#### Scenario: Failure after Silver commit
+- **WHEN** Silver commits but the callback or checkpoint acknowledgement fails
+- **THEN** replay rebuilds the complete hours without duplicate business keys; unchanged Bronze/rules preserve business rows while processing audit timestamps can change
 
 #### Scenario: Gold refresh failure
-- **WHEN** raw and silver succeed but gold update fails
-- **THEN** the batch is retried and the pre-existing raw and silver results remain correct rather than producing duplicates
+- **WHEN** the independently scheduled Gold task fails
+- **THEN** Silver continues processing and committing its own checkpoint and no Silver retry depends on Gold success
+
+#### Scenario: Historical file excluded by discovery bounds
+- **WHEN** an old restored file is not eligible for ordinary streaming discovery
+- **THEN** an operator can perform the documented complete-hour replay without concurrent Silver writers, altering canonical files or casually deleting the normal checkpoint
+
+#### Scenario: Valid empty snapshot
+- **WHEN** a null/empty `states` snapshot is processed successfully
+- **THEN** its hour participates in the full-hour rebuild and source-processing freshness is recorded operationally without fabricated Silver rows or added Bronze fields
