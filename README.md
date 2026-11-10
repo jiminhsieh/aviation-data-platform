@@ -2,7 +2,7 @@
 
 An Azure lakehouse for OpenSky aircraft observations over Southeast Asia.
 
-**Status: Foundation Terraform staged, not deployed.** The [architecture and technical design](references/thales-azure-data-platform-design.md) describes the target system; the [collector CLI, tests and Helm chart](ingestion/README.md) are implemented but have not been validated on AKS/ADLS, and transformation jobs are not yet implemented. [Azure/Unity Catalog setup and recovery commands](infra/tf/README.md) require operator credentials and a reviewed plan.
+**Status: Foundation Terraform staged, not deployed.** The [architecture and technical design](references/thales-azure-data-platform-design.md) describes the target system; the [collector CLI, tests and Helm chart](ingestion/README.md) and [Bronze → Silver streaming Job and local tests](transformation/data-pipelines-design-doc.md#running-silver-local-and-provisioned) are implemented but not verified on AKS/ADLS/Databricks. Gold remains design-only. [Azure/Unity Catalog setup and recovery commands](infra/tf/README.md) require operator credentials and a reviewed plan.
 
 ## Architecture Diagram
 
@@ -40,7 +40,7 @@ AKS provides controlled Kubernetes ingestion; Spark runs in Databricks, not on A
 
 ### Data Lake
 
-ADLS Gen2 uses four containers: `bronze`, `checkpoints`, `lakehouse` and `quarantine`. Bronze and checkpoints have separately governed Unity Catalog volumes; Silver and Gold are managed Delta tables.
+ADLS Gen2 uses two accounts: a primary account with `bronze`, `lakehouse` and `quarantine` (no blob soft delete), and a separate `checkpoints` account with 30-day blob soft delete. Bronze and checkpoints have separately governed Unity Catalog volumes; Silver and Gold are managed Delta tables.
 
 | Layer | Hourly UTC layout |
 |---|---|
@@ -76,8 +76,8 @@ For the PoC, justify any public endpoints and verify AKS/Databricks connectivity
 
 - [Foundation first-run, state backup, rotation and teardown](infra/tf/README.md) — foundation only; review the plan before applying.
 - [Collector local/AKS run, verification, Bronze contract and shared API budget](ingestion/README.md) — CLI/chart available; live verification outstanding. `*/2` UTC yields 720 polls × four = 2,880 daily credits; all retries, manual calls and environments share the remaining 1,120 credits (280 extra calls). Three live environments at that cadence would need 8,640 credits/day before retries. Source age/archival are separate from Silver and Gold freshness.
-- [Pipeline first-run checklist](references/thales-azure-data-platform-design.md#first-run-checklist) — downstream jobs are future work.
-- [Stream replay and recovery](references/thales-azure-data-platform-design.md#93-replay-runbook) — future stream, not yet executable.
+- [Silver local tests, first run, checkpoint restart and bounded replay](transformation/data-pipelines-design-doc.md#running-silver-local-and-provisioned) — code and paused Job available; hosted runtime verification outstanding.
+- [Pipeline first-run checklist](references/thales-azure-data-platform-design.md#first-run-checklist) — Gold job is future work.
 
 A second source can reuse the same environment, separate UC volume paths and run identities if quotas/grants permit; it needs its own collector contract, schema, retention and downstream jobs. Do not put another source in the OpenSky canonical prefix or reset its checkpoint.
 
