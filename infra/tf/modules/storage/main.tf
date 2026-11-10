@@ -5,6 +5,11 @@ terraform {
 }
 
 variable "name" { type = string }
+variable "containers" { type = set(string) }
+variable "soft_delete_days" {
+  type    = number
+  default = null
+}
 variable "resource_group_name" { type = string }
 variable "location" { type = string }
 variable "tags" { type = map(string) }
@@ -23,12 +28,15 @@ resource "azurerm_storage_account" "this" {
   public_network_access_enabled   = true
   tags                            = var.tags
 
-  blob_properties {
-    delete_retention_policy {
-      days = 30
-    }
-    container_delete_retention_policy {
-      days = 30
+  dynamic "blob_properties" {
+    for_each = var.soft_delete_days == null ? [] : [var.soft_delete_days]
+    content {
+      delete_retention_policy {
+        days = blob_properties.value
+      }
+      container_delete_retention_policy {
+        days = blob_properties.value
+      }
     }
   }
 
@@ -38,7 +46,7 @@ resource "azurerm_storage_account" "this" {
 }
 
 resource "azurerm_storage_container" "this" {
-  for_each              = toset(["bronze", "checkpoints", "lakehouse", "quarantine"])
+  for_each              = var.containers
   name                  = each.key
   storage_account_id    = azurerm_storage_account.this.id
   container_access_type = "private"

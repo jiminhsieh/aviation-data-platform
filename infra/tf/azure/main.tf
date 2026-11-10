@@ -41,6 +41,15 @@ variable "storage_account_name" {
   }
 }
 
+variable "checkpoint_storage_account_name" {
+  type        = string
+  description = "Globally unique HNS account for checkpoints only; distinct from storage_account_name."
+  validation {
+    condition     = can(regex("^[a-z0-9]{3,24}$", var.checkpoint_storage_account_name)) && var.checkpoint_storage_account_name != var.storage_account_name
+    error_message = "Choose a distinct checkpoint storage account name of 3-24 lower-case letters/digits."
+  }
+}
+
 variable "acr_name" {
   type        = string
   description = "Globally unique registry name for this environment."
@@ -95,6 +104,17 @@ module "network" {
 module "storage" {
   source              = "../modules/storage"
   name                = var.storage_account_name
+  containers          = toset(["bronze", "lakehouse", "quarantine"])
+  resource_group_name = azurerm_resource_group.this.name
+  location            = azurerm_resource_group.this.location
+  tags                = local.tags
+}
+
+module "checkpoint_storage" {
+  source              = "../modules/storage"
+  name                = var.checkpoint_storage_account_name
+  containers          = toset(["checkpoints"])
+  soft_delete_days    = 30
   resource_group_name = azurerm_resource_group.this.name
   location            = azurerm_resource_group.this.location
   tags                = local.tags
@@ -266,7 +286,7 @@ resource "azurerm_databricks_access_connector" "this" {
 
 resource "azurerm_role_assignment" "uc_storage" {
   for_each             = toset(["bronze", "checkpoints", "lakehouse"])
-  scope                = module.storage.container_ids[each.key]
+  scope                = each.key == "checkpoints" ? module.checkpoint_storage.container_ids[each.key] : module.storage.container_ids[each.key]
   role_definition_name = "Storage Blob Data Contributor"
   principal_id         = azurerm_databricks_access_connector.this.identity[0].principal_id
 }
@@ -283,11 +303,12 @@ resource "azurerm_log_analytics_workspace" "this" {
 # Categories come from each live service; no hard-coded unsupported log category names.
 data "azurerm_monitor_diagnostic_categories" "this" {
   for_each = {
-    aks       = azurerm_kubernetes_cluster.this.id
-    acr       = azurerm_container_registry.this.id
-    vault     = azurerm_key_vault.this.id
-    workspace = azurerm_databricks_workspace.this.id
-    storage   = "${module.storage.account_id}/blobServices/default"
+    aks                = azurerm_kubernetes_cluster.this.id
+    acr                = azurerm_container_registry.this.id
+    vault              = azurerm_key_vault.this.id
+    workspace          = azurerm_databricks_workspace.this.id
+    storage            = "${module.storage.account_id}/blobServices/default"
+    checkpoint_storage = "${module.checkpoint_storage.account_id}/blobServices/default"
   }
   resource_id = each.value
 }
@@ -320,6 +341,10 @@ output "access_connector_id" {
 
 output "storage_account_name" {
   value = module.storage.account_name
+}
+
+output "checkpoint_storage_account_name" {
+  value = module.checkpoint_storage.account_name
 }
 
 output "collector_client_id" {

@@ -36,6 +36,7 @@ variable "workspace_id" { type = number }
 variable "workspace_host" { type = string }
 variable "access_connector_id" { type = string }
 variable "storage_account_name" { type = string }
+variable "checkpoint_storage_account_name" { type = string }
 
 variable "scientist_group" {
   type        = string
@@ -131,7 +132,7 @@ resource "databricks_external_location" "bronze" {
 resource "databricks_external_location" "checkpoints" {
   provider        = databricks.workspace
   name            = "aviation-${var.environment}-checkpoints"
-  url             = format(local.url, "checkpoints")
+  url             = "abfss://checkpoints@${var.checkpoint_storage_account_name}.dfs.core.windows.net"
   credential_name = databricks_storage_credential.this.name
 }
 
