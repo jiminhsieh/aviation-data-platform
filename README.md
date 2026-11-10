@@ -2,7 +2,7 @@
 
 An Azure lakehouse for OpenSky aircraft observations over Southeast Asia.
 
-**Status: Adopted design / implementation pending.** This README summarizes the target architecture, not a deployed platform. The [architecture and technical design](references/thales-azure-data-platform-design.md) is authoritative; pipeline code and runnable setup commands remain to be implemented.
+**Status: Foundation Terraform staged, not deployed.** The [architecture and technical design](references/thales-azure-data-platform-design.md) describes the target system; collector and transformation jobs are not yet implemented. [Azure/Unity Catalog setup and recovery commands](infra/tf/README.md) require operator credentials and a reviewed plan.
 
 ## Architecture Diagram
 
@@ -34,7 +34,7 @@ To balance these trade-offs, I propose a polyrepo structure connected through Gi
 1. **Ingestion:** an AKS CronJob authenticates to OpenSky every 120 seconds for the fixed bounding box. It archives one immutable Snappy-compressed Avro container per response, preserving exactly the original `time` and positional `states` payload without added Bronze fields.
 2. **Bronze → Silver:** native Spark Structured Streaming on Databricks classic Jobs compute uses a durable checkpoint and initially one-minute micro-batches. Each batch rereads complete affected Bronze hours, validates and deterministically deduplicates observations, then atomically replaces those Silver partitions with `replaceWhere`.
 3. **Silver → Gold:** an independent SQL-file task runs every two minutes on a Pro or Serverless SQL warehouse. At PoC scale, it atomically overwrites all Gold data from retained Silver, including clearing obsolete hours. It is not coupled to the stream checkpoint; SQL failures do not block Silver.
-4. **Governance and delivery:** Unity Catalog governs volumes, managed Delta tables, grants and lineage. Terraform provisions the platform; Helm deploys the collector.
+4. **Governance and delivery:** Unity Catalog governs volumes, managed Delta tables and grants. Separate AzureRM and Databricks Terraform roots stage the foundation; future Helm charts own the collector and future Databricks Job definitions own the pipeline.
 
 AKS provides controlled Kubernetes ingestion; Spark runs in Databricks, not on AKS. No Kafka, Airflow or Auto Loader is required. Avro small-file overhead and continuous Spark/SQL warehouse costs must be measured, not assumed to be lower.
 
@@ -56,13 +56,15 @@ All hour keys use source time and include the full UTC date. Hourly partitioning
 
 #### Data Access Permissions
 
-| Component | ATM | Data Scientist | Platform Engineer |
-|---|---|---|---|
-| Bronze | None | None | Controlled recovery |
-| Checkpoints | None | None | Controlled recovery |
-| Silver | Optional read | Read only | Operational management |
-| Gold | Read/dashboard | Read only | Operational management |
-| Key Vault | None | None | Controlled management |
+| Identity | Bronze | Checkpoints | Silver | Gold | Secrets |
+|---|---|---|---|---|---|
+| Collector (AKS Workload Identity) | Create/read; collision handling | None | None | None | OpenSky names only |
+| Silver stream (Databricks run-as) | Read | Read/write | Read/modify | None | None |
+| Gold SQL (Databricks run-as) | None | None | Read | Read/modify | None |
+| Data scientist | None | None | Read | Read | None |
+| ATM analyst | None | None | Optional read | Read | None |
+
+The collector also writes to quarantine; only the platform operator has recovery/teardown rights. Grants and cloud role-denial checks are not yet verified. [Full access matrix](references/thales-azure-data-platform-design.md#102-access-matrix).
 
 ### Security and Networking
 
@@ -72,8 +74,9 @@ For the PoC, justify any public endpoints and verify AKS/Databricks connectivity
 
 ## Runbook
 
-Planned procedures, not runnable deployment instructions:
+- [Foundation first-run, state backup, rotation and teardown](infra/tf/README.md) — foundation only; review the plan before applying.
+- [Pipeline first-run checklist](references/thales-azure-data-platform-design.md#first-run-checklist) — future collector and jobs.
+- [Stream replay and recovery](references/thales-azure-data-platform-design.md#93-replay-runbook) — future stream, not yet executable.
 
-- [First-run checklist](references/thales-azure-data-platform-design.md#first-run-checklist)
-- [Replay and recovery](references/thales-azure-data-platform-design.md#93-replay-runbook)
+A second source can reuse the same environment, separate UC volume paths and run identities if quotas/grants permit; it needs its own collector contract, schema, retention and downstream jobs. Do not put another source in the OpenSky canonical prefix or reset its checkpoint.
 
