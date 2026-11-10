@@ -1,0 +1,4 @@
+environment         = "prod"
+address_space       = "10.44.0.0/16"
+aks_subnet_cidr     = "10.44.0.0/22"
+private_subnet_cidr = "10.44.4.0/24"

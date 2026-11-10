@@ -53,19 +53,11 @@ variable "key_vault_name" {
 
 variable "address_space" {
   type        = string
-  description = "Unique VNet /16 for this environment; adjust subnet CIDRs together if changed."
-  default     = "10.42.0.0/16"
+  description = "Unique VNet CIDR for this environment; adjust subnet CIDRs together if changed."
 }
 
-variable "aks_subnet_cidr" {
-  type    = string
-  default = "10.42.0.0/22"
-}
-
-variable "private_subnet_cidr" {
-  type    = string
-  default = "10.42.4.0/24"
-}
+variable "aks_subnet_cidr" { type = string }
+variable "private_subnet_cidr" { type = string }
 
 variable "aks_vm_size" {
   type    = string
@@ -89,89 +81,60 @@ resource "azurerm_resource_group" "this" {
   tags     = local.tags
 }
 
-resource "azurerm_virtual_network" "this" {
-  name                = "${local.prefix}-vnet"
-  location            = azurerm_resource_group.this.location
+module "network" {
+  source              = "../modules/network"
+  prefix              = local.prefix
   resource_group_name = azurerm_resource_group.this.name
-  address_space       = [var.address_space]
+  location            = azurerm_resource_group.this.location
+  tags                = local.tags
+  address_space       = var.address_space
+  aks_subnet_cidr     = var.aks_subnet_cidr
+  private_subnet_cidr = var.private_subnet_cidr
+}
+
+module "storage" {
+  source              = "../modules/storage"
+  name                = var.storage_account_name
+  resource_group_name = azurerm_resource_group.this.name
+  location            = azurerm_resource_group.this.location
   tags                = local.tags
 }
 
-resource "azurerm_subnet" "aks" {
-  name                 = "aks"
-  resource_group_name  = azurerm_resource_group.this.name
-  virtual_network_name = azurerm_virtual_network.this.name
-  address_prefixes     = [var.aks_subnet_cidr]
+moved {
+  from = azurerm_virtual_network.this
+  to   = module.network.azurerm_virtual_network.this
 }
-
-resource "azurerm_subnet" "private" {
-  name                 = "private-endpoints-reserved"
-  resource_group_name  = azurerm_resource_group.this.name
-  virtual_network_name = azurerm_virtual_network.this.name
-  address_prefixes     = [var.private_subnet_cidr]
+moved {
+  from = azurerm_subnet.aks
+  to   = module.network.azurerm_subnet.aks
 }
-
-resource "azurerm_network_security_group" "aks" {
-  name                = "${local.prefix}-aks-nsg"
-  location            = azurerm_resource_group.this.location
-  resource_group_name = azurerm_resource_group.this.name
-  tags                = local.tags
+moved {
+  from = azurerm_subnet.private
+  to   = module.network.azurerm_subnet.private
 }
-
-resource "azurerm_network_security_group" "private" {
-  name                = "${local.prefix}-private-nsg"
-  location            = azurerm_resource_group.this.location
-  resource_group_name = azurerm_resource_group.this.name
-  tags                = local.tags
+moved {
+  from = azurerm_network_security_group.aks
+  to   = module.network.azurerm_network_security_group.aks
 }
-
-resource "azurerm_subnet_network_security_group_association" "aks" {
-  subnet_id                 = azurerm_subnet.aks.id
-  network_security_group_id = azurerm_network_security_group.aks.id
+moved {
+  from = azurerm_network_security_group.private
+  to   = module.network.azurerm_network_security_group.private
 }
-
-resource "azurerm_subnet_network_security_group_association" "private" {
-  subnet_id                 = azurerm_subnet.private.id
-  network_security_group_id = azurerm_network_security_group.private.id
+moved {
+  from = azurerm_subnet_network_security_group_association.aks
+  to   = module.network.azurerm_subnet_network_security_group_association.aks
 }
-
-resource "azurerm_storage_account" "this" {
-  name                            = var.storage_account_name
-  location                        = azurerm_resource_group.this.location
-  resource_group_name             = azurerm_resource_group.this.name
-  account_tier                    = "Standard"
-  account_replication_type        = "LRS"
-  is_hns_enabled                  = true
-  min_tls_version                 = "TLS1_2"
-  allow_nested_items_to_be_public = false
-  shared_access_key_enabled       = false
-  default_to_oauth_authentication = true
-  public_network_access_enabled   = true
-  tags                            = local.tags
-
-  blob_properties {
-    delete_retention_policy {
-      days = 30
-    }
-    container_delete_retention_policy {
-      days = 30
-    }
-  }
-
-  lifecycle {
-    prevent_destroy = true
-  }
+moved {
+  from = azurerm_subnet_network_security_group_association.private
+  to   = module.network.azurerm_subnet_network_security_group_association.private
 }
-
-resource "azurerm_storage_container" "this" {
-  for_each              = toset(["bronze", "checkpoints", "lakehouse", "quarantine"])
-  name                  = each.key
-  storage_account_id    = azurerm_storage_account.this.id
-  container_access_type = "private"
-
-  lifecycle {
-    prevent_destroy = true
-  }
+moved {
+  from = azurerm_storage_account.this
+  to   = module.storage.azurerm_storage_account.this
+}
+moved {
+  from = azurerm_storage_container.this
+  to   = module.storage.azurerm_storage_container.this
 }
 
 resource "azurerm_container_registry" "this" {
@@ -198,7 +161,7 @@ resource "azurerm_kubernetes_cluster" "this" {
     name           = "system"
     vm_size        = var.aks_vm_size
     node_count     = 1
-    vnet_subnet_id = azurerm_subnet.aks.id
+    vnet_subnet_id = module.network.aks_subnet_id
   }
 
   identity {
@@ -215,7 +178,7 @@ resource "azurerm_kubernetes_cluster" "this" {
   }
 
   tags       = local.tags
-  depends_on = [azurerm_subnet_network_security_group_association.aks]
+  depends_on = [module.network]
 }
 
 resource "azurerm_role_assignment" "aks_acr_pull" {
@@ -258,7 +221,7 @@ resource "azurerm_role_definition" "collector_blobs" {
 
 resource "azurerm_role_assignment" "collector_blobs" {
   for_each           = toset(["bronze", "quarantine"])
-  scope              = azurerm_storage_container.this[each.key].resource_manager_id
+  scope              = module.storage.container_ids[each.key]
   role_definition_id = azurerm_role_definition.collector_blobs.role_definition_resource_id
   principal_id       = azurerm_user_assigned_identity.collector.principal_id
 }
@@ -303,7 +266,7 @@ resource "azurerm_databricks_access_connector" "this" {
 
 resource "azurerm_role_assignment" "uc_storage" {
   for_each             = toset(["bronze", "checkpoints", "lakehouse"])
-  scope                = azurerm_storage_container.this[each.key].resource_manager_id
+  scope                = module.storage.container_ids[each.key]
   role_definition_name = "Storage Blob Data Contributor"
   principal_id         = azurerm_databricks_access_connector.this.identity[0].principal_id
 }
@@ -324,7 +287,7 @@ data "azurerm_monitor_diagnostic_categories" "this" {
     acr       = azurerm_container_registry.this.id
     vault     = azurerm_key_vault.this.id
     workspace = azurerm_databricks_workspace.this.id
-    storage   = "${azurerm_storage_account.this.id}/blobServices/default"
+    storage   = "${module.storage.account_id}/blobServices/default"
   }
   resource_id = each.value
 }
@@ -356,7 +319,7 @@ output "access_connector_id" {
 }
 
 output "storage_account_name" {
-  value = azurerm_storage_account.this.name
+  value = module.storage.account_name
 }
 
 output "collector_client_id" {

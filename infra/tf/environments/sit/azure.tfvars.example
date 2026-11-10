@@ -1,0 +1,4 @@
+environment         = "sit"
+address_space       = "10.42.0.0/16"
+aks_subnet_cidr     = "10.42.0.0/22"
+private_subnet_cidr = "10.42.4.0/24"
