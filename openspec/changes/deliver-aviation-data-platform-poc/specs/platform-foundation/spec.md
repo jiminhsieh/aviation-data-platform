@@ -18,11 +18,11 @@ The platform SHALL declare storage, compute, secrets, catalog, query resources a
 - **THEN** it cannot accidentally reuse the first environment's state, source data, run identities or checkpoint path
 
 ### Requirement: Governed storage and independent execution
-The platform SHALL provide separate ADLS Gen2 `bronze`, `checkpoints`, `lakehouse` and `quarantine` containers, separately governed Bronze/checkpoint volumes, and managed Silver/Gold Delta tables. Bronze paths and table partitions SHALL use full UTC source hours. Checkpoints SHALL be outside source discovery and table storage, protected from automatic expiry. Silver and Gold SHALL have independent execution, retry and single-writer controls.
+The platform SHALL provide ADLS Gen2 `bronze`, `lakehouse` and `quarantine` containers in one storage account with blob soft delete disabled, and a `checkpoints` container in a separate account with 30-day blob soft delete. It SHALL provide separately governed Bronze/checkpoint volumes and managed Silver/Gold Delta tables. Bronze paths and table partitions SHALL use full UTC source hours. Checkpoints SHALL be outside source discovery and table storage, protected from automatic expiry; soft delete is a recovery window, not expiry. Silver and Gold SHALL have independent execution, retry and single-writer controls.
 
 #### Scenario: Bootstrap the lakehouse
 - **WHEN** an environment is prepared for its first pipeline run
-- **THEN** the canonical Bronze directory and protected checkpoint location exist, Silver is partitioned by `snapshot_hour_utc`, and Gold is partitioned by `bucket_hour_utc` without granting analysts underlying storage access
+- **THEN** the canonical Bronze directory and protected checkpoint location exist in their respective storage accounts, only the checkpoint account has 30-day blob soft delete, Silver is partitioned by `snapshot_hour_utc`, and Gold is partitioned by `bucket_hour_utc` without granting analysts underlying storage access
 
 #### Scenario: Gold execution is unavailable
 - **WHEN** Gold SQL execution fails or is paused
@@ -37,7 +37,7 @@ The PoC SHALL use Terraform's local backend to keep setup simple, with separatel
 
 #### Scenario: Clean teardown
 - **WHEN** an operator follows the documented destroy procedure
-- **THEN** billable resources are stopped or removed, needed local state/data are preserved, and warnings precede irreversible lake, managed-table or checkpoint deletion
+- **THEN** billable resources are stopped or removed, needed local state/data are preserved, and warnings precede irreversible lake, managed-table or checkpoint deletion; the lack of blob soft delete on Bronze, lakehouse and quarantine is explicit
 
 ### Requirement: Separate workload and human access
 The platform SHALL use distinct least-privilege collector, Silver-stream and Gold-SQL identities without static Azure storage keys. OpenSky registration and secret injection SHALL be documented external inputs, with secret values excluded from tracked files, Terraform variables/state and logs. The collector SHALL access only its OpenSky secrets, Bronze creation/collision reads and quarantine writes; the stream SHALL read Bronze, read/write its checkpoint and read/modify Silver; Gold SQL SHALL read Silver, read/modify Gold and use its warehouse.

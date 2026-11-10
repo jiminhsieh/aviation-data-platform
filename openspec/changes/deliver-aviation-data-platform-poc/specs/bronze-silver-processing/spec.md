@@ -40,7 +40,7 @@ Silver SHALL use `snapshot_time` as Unix-seconds BIGINT and UTC TIMESTAMP values
 - **THEN** each timestamp, hour partition and five-minute bucket follows source time, independently of upload time or session-local timezone
 
 ### Requirement: Atomic complete-hour replacement
-Each processing batch SHALL identify affected UTC hours before expanding aircraft arrays, reread all canonical Bronze files for those hours, validate source/path agreement, normalize/validate/deduplicate the complete inputs and atomically replace only the affected Silver hours in one commit. The replacement SHALL preserve the table/schema/grants, enforce the explicit hour scope and keep unrelated hours unchanged. It SHALL never use only the newly discovered snapshots as a complete-hour replacement.
+Each processing batch SHALL identify affected UTC hours before expanding aircraft arrays, reread all present canonical Bronze files for those hours, verify that each discovered input remains readable and validate source/path agreement, normalize/validate/deduplicate the hour inputs and atomically replace only the affected Silver hours in one commit. The replacement SHALL preserve the table/schema/grants, enforce the explicit hour scope and keep unrelated hours unchanged. It SHALL never use only the newly discovered snapshots as a complete-hour replacement.
 
 #### Scenario: Second snapshot in an existing hour
 - **WHEN** a new snapshot arrives in an hour already represented in Silver
@@ -48,18 +48,18 @@ Each processing batch SHALL identify affected UTC hours before expanding aircraf
 
 #### Scenario: Batch spans multiple hours
 - **WHEN** newly discovered files include current and late historical hours
-- **THEN** all complete affected hours are replaced atomically and unrelated partitions remain unchanged
+- **THEN** all affected hours are rebuilt from their present canonical inputs and replaced atomically while unrelated partitions remain unchanged
 
 #### Scenario: Empty input or zero-observation hour
 - **WHEN** a batch has no affected hours
-- **THEN** it makes no Silver write; an affected hour whose complete validated rebuild has zero surviving observations instead receives an explicit schema-correct empty replacement that clears only that hour
+- **THEN** it makes no Silver write; an affected hour whose validated rebuild from present canonical inputs has zero surviving observations instead receives an explicit schema-correct empty replacement that clears only that hour
 
-#### Scenario: Incomplete or unreadable source hour
-- **WHEN** an affected hour is expired, partly deleted, incompletely restored, unreadable or inconsistent with its source-time path
-- **THEN** processing stops before replacement and requires complete source restoration rather than interpreting missing data as zero aircraft
+#### Scenario: Unreadable or inconsistent source hour
+- **WHEN** an affected hour is outside the retained rebuild horizon, a discovered file is no longer readable, or a present canonical file is malformed or inconsistent with its source-time path
+- **THEN** processing stops before replacement rather than interpreting that failure as zero aircraft
 
 ### Requirement: Recoverable independent Silver progress
-The pipeline SHALL retain complete canonical Bronze for the retained Silver/rebuild horizon, serialize stream/backfill writers and acknowledge source progress only after successful Silver processing and required accounting, independently of Gold. Ordinary restarts SHALL preserve the checkpoint. Controlled bounded replay SHALL pause the normal writer, expand selected paths to complete hours, verify completeness, reuse the same transformation/replacement, validate results, refresh Gold independently and resume the original stream. Lost/incompatible checkpoints and file-age/discovery bounds SHALL require explicit recovery rather than automatic reset.
+The pipeline SHALL rely on operational retention of immutable canonical Bronze for the retained Silver/rebuild horizon; it SHALL NOT merge old Silver rows into a rebuilt hour. Without an authoritative file inventory, scanning Bronze cannot detect an earlier file that is already absent: loss or incomplete restoration is an accepted PoC risk, not a verified complete-hour guarantee. The pipeline SHALL serialize stream/backfill writers and acknowledge source progress only after successful Silver processing and required accounting, independently of Gold. Ordinary restarts SHALL preserve the checkpoint. Controlled bounded replay SHALL pause the normal writer, expand selected paths to full UTC hours, check selected files and all present canonical inputs for readability and path agreement, reuse the same transformation/replacement, validate results, refresh Gold independently and resume the original stream. Suspected loss requires independent source/backup investigation before replay; lost/incompatible checkpoints and file-age/discovery bounds require explicit recovery rather than automatic reset.
 
 #### Scenario: Failure after Silver commit
 - **WHEN** Silver commits but the callback or checkpoint acknowledgement fails
