@@ -2,7 +2,7 @@
 
 An Azure lakehouse for OpenSky aircraft observations over Southeast Asia.
 
-**Status: Foundation Terraform staged, not deployed.** The [architecture and technical design](references/thales-azure-data-platform-design.md) describes the target system; collector and transformation jobs are not yet implemented. [Azure/Unity Catalog setup and recovery commands](infra/tf/README.md) require operator credentials and a reviewed plan.
+**Status: Foundation Terraform staged, not deployed.** The [architecture and technical design](references/thales-azure-data-platform-design.md) describes the target system; the [collector CLI, tests and Helm chart](ingestion/README.md) are implemented but have not been validated on AKS/ADLS, and transformation jobs are not yet implemented. [Azure/Unity Catalog setup and recovery commands](infra/tf/README.md) require operator credentials and a reviewed plan.
 
 ## Architecture Diagram
 
@@ -34,7 +34,7 @@ To balance these trade-offs, I propose a polyrepo structure connected through Gi
 1. **Ingestion:** an AKS CronJob authenticates to OpenSky every 120 seconds for the fixed bounding box. It archives one immutable Snappy-compressed Avro container per response, preserving exactly the original `time` and positional `states` payload without added Bronze fields.
 2. **Bronze → Silver:** native Spark Structured Streaming on Databricks classic Jobs compute uses a durable checkpoint and initially one-minute micro-batches. Each batch rereads complete affected Bronze hours, validates and deterministically deduplicates observations, then atomically replaces those Silver partitions with `replaceWhere`.
 3. **Silver → Gold:** an independent SQL-file task runs every two minutes on a Pro or Serverless SQL warehouse. At PoC scale, it atomically overwrites all Gold data from retained Silver, including clearing obsolete hours. It is not coupled to the stream checkpoint; SQL failures do not block Silver.
-4. **Governance and delivery:** Unity Catalog governs volumes, managed Delta tables and grants. Separate AzureRM and Databricks Terraform roots stage the foundation; future Helm charts own the collector and future Databricks Job definitions own the pipeline.
+4. **Governance and delivery:** Unity Catalog governs volumes, managed Delta tables and grants. Separate AzureRM and Databricks Terraform roots stage the foundation; the [collector Helm chart](ingestion/README.md#build-and-deploy) owns its Kubernetes objects and future Databricks Job definitions own the pipeline.
 
 AKS provides controlled Kubernetes ingestion; Spark runs in Databricks, not on AKS. No Kafka, Airflow or Auto Loader is required. Avro small-file overhead and continuous Spark/SQL warehouse costs must be measured, not assumed to be lower.
 
@@ -75,7 +75,8 @@ For the PoC, justify any public endpoints and verify AKS/Databricks connectivity
 ## Runbook
 
 - [Foundation first-run, state backup, rotation and teardown](infra/tf/README.md) — foundation only; review the plan before applying.
-- [Pipeline first-run checklist](references/thales-azure-data-platform-design.md#first-run-checklist) — future collector and jobs.
+- [Collector local/AKS run, verification, Bronze contract and shared API budget](ingestion/README.md) — CLI/chart available; live verification outstanding. `*/2` UTC yields 720 polls × four = 2,880 daily credits; all retries, manual calls and environments share the remaining 1,120 credits (280 extra calls). Three live environments at that cadence would need 8,640 credits/day before retries. Source age/archival are separate from Silver and Gold freshness.
+- [Pipeline first-run checklist](references/thales-azure-data-platform-design.md#first-run-checklist) — downstream jobs are future work.
 - [Stream replay and recovery](references/thales-azure-data-platform-design.md#93-replay-runbook) — future stream, not yet executable.
 
 A second source can reuse the same environment, separate UC volume paths and run identities if quotas/grants permit; it needs its own collector contract, schema, retention and downstream jobs. Do not put another source in the OpenSky canonical prefix or reset its checkpoint.
