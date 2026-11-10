@@ -6,6 +6,8 @@ An Azure lakehouse for OpenSky aircraft observations over Southeast Asia.
 
 ## Architecture Diagram
 
+![img.png](references/data-platform-architecture-diagram.jpg)
+
 ```mermaid
 flowchart TB
     OS["OpenSky API"] --> CJ["AKS CronJob: every 120 seconds"]
